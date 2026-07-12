@@ -733,9 +733,23 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+    if (!process.env.VERCEL) {
+    const runtimePort = Number(process.env.PORT) || PORT;
+
+    app.listen(runtimePort, "0.0.0.0", () => {
+      console.log(`Server running on port ${runtimePort}`);
+    });
+  }
+
+  return app;
 }
 
-startServer();
+const appPromise = startServer();
+
+export default async function handler(
+  req: express.Request,
+  res: express.Response
+) {
+  const app = await appPromise;
+  return app(req, res);
+}
