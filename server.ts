@@ -751,5 +751,12 @@ export default async function handler(
   res: express.Response
 ) {
   const app = await appPromise;
-  return app(req, res);
+
+  await new Promise<void>((resolve, reject) => {
+    res.once("finish", resolve);
+    res.once("close", resolve);
+    res.once("error", reject);
+
+    app(req, res);
+  });
 }
