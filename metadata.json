@@ -1,0 +1,6 @@
+{
+  "name": "AI LinkedIn Growth Engine",
+  "description": "A premium AI editorial workspace for creating highly engaging LinkedIn content about artificial intelligence.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
