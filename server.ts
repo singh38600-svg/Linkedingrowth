@@ -1,7 +1,15 @@
-import express from "express";
-import * as admin from "firebase-admin";
+import express, {
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import { FieldValue } from "firebase-admin/firestore";
-import { verifyFirebaseToken, db } from "./src/server/firebaseAdmin";
+
+import {
+  verifyFirebaseToken,
+  db,
+} from "./src/server/firebaseAdmin";
+
 import {
   testGeminiConnection,
   testOpenRouterBackup,
@@ -27,1142 +35,1003 @@ import {
   improveCarouselAssetPrompt,
 } from "./src/server/gemini";
 
-function createApp() {
-  const app = express();
+const app = express();
 
-  app.use(
-    express.json({
-      limit: "20mb",
-    }),
-  );
+app.disable("x-powered-by");
 
-  app.get("/api/health", (_req, res) => {
-    res.json({
-      success: true,
-      status: "ready",
-      environment: process.env.VERCEL ? "vercel" : "local",
-      timestamp: new Date().toISOString(),
-    });
+app.use(
+  express.json({
+    limit: "20mb",
+  }),
+);
+
+type RequestBody = Record<string, any>;
+
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function requireFields(
+  body: RequestBody,
+  fields: string[],
+  message: string,
+): void {
+  const missingField = fields.some((field) => {
+    const value = body[field];
+
+    return (
+      value === undefined ||
+      value === null ||
+      value === ""
+    );
   });
 
-  app.post("/api/gemini/test", async (_req, res) => {
-    try {
-      const result = await testGeminiConnection();
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/test:", err);
+  if (missingField) {
+    throw new HttpError(400, message);
+  }
+}
 
-      res.status(500).json({
+function registerPostRoute(
+  path: string,
+  handler: (
+    body: RequestBody,
+    request: Request,
+  ) => Promise<unknown> | unknown,
+): void {
+  app.post(path, async (request, response) => {
+    try {
+      const result = await handler(
+        request.body ?? {},
+        request,
+      );
+
+      response.json(result);
+    } catch (error) {
+      console.error(
+        `Unhandled error in ${path}:`,
+        error,
+      );
+
+      if (error instanceof HttpError) {
+        response.status(error.status).json({
+          success: false,
+          errorCategory: "failed",
+          errorMessage: error.message,
+        });
+
+        return;
+      }
+
+      response.status(500).json({
         success: false,
-        modelName: process.env.TEXT_MODEL || "gemini-3.5-flash",
         errorCategory: "failed",
         errorMessage:
           "An unexpected server error occurred. Please try again.",
-        testedAt: new Date().toISOString(),
       });
     }
   });
+}
 
-  app.post("/api/gemini/test-openrouter-backup", async (_req, res) => {
-    try {
-      const result = await testOpenRouterBackup();
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/test-openrouter-backup:",
-        err,
-      );
+/* -------------------------------------------------------------------------- */
+/* Health check                                                               */
+/* -------------------------------------------------------------------------- */
 
-      res.status(500).json({
-        success: false,
-        modelName: "openrouter/free",
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected server error occurred while testing OpenRouter.",
-        testedAt: new Date().toISOString(),
-      });
-    }
-  });
+app.get(
+  "/api/health",
+  (_request: Request, response: Response) => {
+    response.json({
+      success: true,
+      status: "ready",
+      environment: process.env.VERCEL
+        ? "vercel"
+        : "local",
+      timestamp: new Date().toISOString(),
+    });
+  },
+);
 
-  app.post("/api/gemini/generate-idea", async (req, res) => {
-    try {
-      const profile = req.body.profile;
+/* -------------------------------------------------------------------------- */
+/* Provider connection tests                                                  */
+/* -------------------------------------------------------------------------- */
 
-      if (!profile) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Creator profile is missing. Open Settings and save your profile first.",
-        });
-      }
+registerPostRoute(
+  "/api/gemini/test",
+  async () => {
+    return testGeminiConnection();
+  },
+);
 
-      const result = await generateContentIdea(profile);
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/generate-idea:", err);
+registerPostRoute(
+  "/api/gemini/test-openrouter-backup",
+  async () => {
+    return testOpenRouterBackup();
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected server error occurred while generating the idea.",
-      });
-    }
-  });
+/* -------------------------------------------------------------------------- */
+/* AI idea and research routes                                                */
+/* -------------------------------------------------------------------------- */
 
-  app.post("/api/gemini/research", async (_req, res) => {
-    try {
-      const result = await generateLiveResearch();
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/research:", err);
+registerPostRoute(
+  "/api/gemini/generate-idea",
+  async ({ profile }) => {
+    requireFields(
+      { profile },
+      ["profile"],
+      "Creator profile is missing. Open Settings and save your profile first.",
+    );
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "Live research could not be completed. Please try again.",
-      });
-    }
-  });
+    return generateContentIdea(profile);
+  },
+);
 
-  app.post("/api/gemini/research-brief", async (_req, res) => {
-    try {
-      const result = await generateDailyResearchBrief();
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/research-brief:", err);
+registerPostRoute(
+  "/api/gemini/research",
+  async () => {
+    return generateLiveResearch();
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "Daily research brief could not be completed. Please try again.",
-      });
-    }
-  });
+registerPostRoute(
+  "/api/gemini/research-brief",
+  async () => {
+    return generateDailyResearchBrief();
+  },
+);
 
-  app.post("/api/gemini/grounded-idea", async (req, res) => {
-    try {
-      const { profile, research, previousIdea } = req.body;
-
-      if (!profile) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Creator profile is missing. Open Settings and save your profile first.",
-        });
-      }
-
-      if (!research) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Research result is missing. Please run research first.",
-        });
-      }
-
-      const result = await generateGroundedContentIdea(
+registerPostRoute(
+  "/api/gemini/grounded-idea",
+  async ({
+    profile,
+    research,
+    previousIdea,
+  }) => {
+    requireFields(
+      {
         profile,
         research,
-        previousIdea,
-      );
+      },
+      [
+        "profile",
+        "research",
+      ],
+      "Creator profile and verified research are required.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/grounded-idea:", err);
+    return generateGroundedContentIdea(
+      profile,
+      research,
+      previousIdea,
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "The grounded idea could not be verified. Please try again.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/ideas-collection", async (req, res) => {
-    try {
-      const { profile, brief, excludedCollection } = req.body;
-
-      if (!profile) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Creator profile is missing. Open Settings and save it first.",
-        });
-      }
-
-      if (!brief) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Daily research brief is missing. Build or restore the brief first.",
-        });
-      }
-
-      const result = await generateDailyIdeasCollection(
+registerPostRoute(
+  "/api/gemini/ideas-collection",
+  async ({
+    profile,
+    brief,
+    excludedCollection,
+  }) => {
+    requireFields(
+      {
         profile,
         brief,
-        excludedCollection,
-      );
+      },
+      [
+        "profile",
+        "brief",
+      ],
+      "Creator profile and daily research brief are required.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/ideas-collection:", err);
+    return generateDailyIdeasCollection(
+      profile,
+      brief,
+      excludedCollection,
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred while generating content ideas.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/idea-alternative", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/idea-alternative",
+  async ({
+    profile,
+    brief,
+    targetIdea,
+    allExistingIdeas,
+  }) => {
+    requireFields(
+      {
         profile,
         brief,
         targetIdea,
         allExistingIdeas,
-      } = req.body;
+      },
+      [
+        "profile",
+        "brief",
+        "targetIdea",
+        "allExistingIdeas",
+      ],
+      "Missing required information for generating an alternative idea.",
+    );
 
-      if (
-        !profile ||
-        !brief ||
-        !targetIdea ||
-        !allExistingIdeas
-      ) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for generating an alternative idea.",
-        });
-      }
+    return generateAlternativeDailyIdea(
+      profile,
+      brief,
+      targetIdea,
+      allExistingIdeas,
+    );
+  },
+);
 
-      const result = await generateAlternativeDailyIdea(
-        profile,
-        brief,
-        targetIdea,
-        allExistingIdeas,
-      );
+/* -------------------------------------------------------------------------- */
+/* Idea evaluation routes                                                     */
+/* -------------------------------------------------------------------------- */
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/idea-alternative:", err);
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred while generating the alternative idea.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/stress-test", async (req, res) => {
-    try {
-      const { profile, activeIdeas, collectionId } = req.body;
-
-      if (!profile) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Creator profile is required for the stress test.",
-        });
-      }
-
-      if (!activeIdeas || activeIdeas.length < 7) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "At least seven active ideas are required for the stress test.",
-        });
-      }
-
-      const result = await evaluateDailyIdeasCollection(
+registerPostRoute(
+  "/api/gemini/stress-test",
+  async ({
+    profile,
+    activeIdeas,
+    collectionId,
+  }) => {
+    requireFields(
+      {
         profile,
         activeIdeas,
-        collectionId,
+      },
+      [
+        "profile",
+        "activeIdeas",
+      ],
+      "Creator profile and active ideas are required.",
+    );
+
+    if (
+      !Array.isArray(activeIdeas) ||
+      activeIdeas.length < 7
+    ) {
+      throw new HttpError(
+        400,
+        "At least seven active ideas are required for the stress test.",
       );
-
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/stress-test:", err);
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "The stress test could not be completed. Please run it again.",
-      });
     }
-  });
 
-  app.post("/api/gemini/improve-idea", async (req, res) => {
-    try {
-      const { profile, targetIdea, evaluation } = req.body;
+    return evaluateDailyIdeasCollection(
+      profile,
+      activeIdeas,
+      collectionId,
+    );
+  },
+);
 
-      if (!profile || !targetIdea || !evaluation) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for improving the idea.",
-        });
-      }
-
-      const result = await improveSelectedIdea(
+registerPostRoute(
+  "/api/gemini/improve-idea",
+  async ({
+    profile,
+    targetIdea,
+    evaluation,
+  }) => {
+    requireFields(
+      {
         profile,
         targetIdea,
         evaluation,
-      );
+      },
+      [
+        "profile",
+        "targetIdea",
+        "evaluation",
+      ],
+      "Missing required information for improving the idea.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/improve-idea:", err);
+    return improveSelectedIdea(
+      profile,
+      targetIdea,
+      evaluation,
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred while improving the idea.",
-      });
-    }
-  });
+/* -------------------------------------------------------------------------- */
+/* Post Studio routes                                                         */
+/* -------------------------------------------------------------------------- */
 
-  app.post("/api/gemini/generate-post", async (req, res) => {
-    try {
-      const { profile, winningIdea, evaluation } = req.body;
-
-      if (!profile || !winningIdea || !evaluation) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for LinkedIn post generation.",
-        });
-      }
-
-      const result = await generateLinkedInPost(
+registerPostRoute(
+  "/api/gemini/generate-post",
+  async ({
+    profile,
+    winningIdea,
+    evaluation,
+  }) => {
+    requireFields(
+      {
         profile,
         winningIdea,
         evaluation,
-      );
+      },
+      [
+        "profile",
+        "winningIdea",
+        "evaluation",
+      ],
+      "Missing required information for LinkedIn post generation.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/generate-post:", err);
+    return generateLinkedInPost(
+      profile,
+      winningIdea,
+      evaluation,
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during post generation.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/adjust-post", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/adjust-post",
+  async ({
+    profile,
+    postContent,
+    adjustmentType,
+    winningIdea,
+  }) => {
+    requireFields(
+      {
         profile,
         postContent,
         adjustmentType,
-        winningIdea,
-      } = req.body;
+      },
+      [
+        "profile",
+        "postContent",
+        "adjustmentType",
+      ],
+      "Missing required information for adjusting the post.",
+    );
 
-      if (!profile || !postContent || !adjustmentType) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for adjusting the post.",
-        });
-      }
+    return adjustLinkedInPost(
+      profile,
+      postContent,
+      adjustmentType,
+      winningIdea,
+    );
+  },
+);
 
-      const result = await adjustLinkedInPost(
-        profile,
-        postContent,
-        adjustmentType,
-        winningIdea,
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/adjust-post:", err);
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred while adjusting the post.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/credibility-check", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/credibility-check",
+  async ({
+    profile,
+    winningIdea,
+    winnerId,
+    hook,
+    body,
+    cta,
+  }) => {
+    requireFields(
+      {
         profile,
         winningIdea,
         winnerId,
-        hook,
-        body,
-        cta,
-      } = req.body;
+      },
+      [
+        "profile",
+        "winningIdea",
+        "winnerId",
+      ],
+      "Missing required information for the credibility check.",
+    );
 
-      if (!profile || !winningIdea || !winnerId) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for the credibility check.",
-        });
-      }
+    return runCredibilityCheck(
+      profile,
+      winningIdea,
+      winnerId,
+      hook ?? "",
+      body ?? "",
+      cta ?? "",
+    );
+  },
+);
 
-      const result = await runCredibilityCheck(
+/* -------------------------------------------------------------------------- */
+/* Visual Studio routes                                                       */
+/* -------------------------------------------------------------------------- */
+
+registerPostRoute(
+  "/api/gemini/analyze-visual-strategy",
+  async ({
+    profile,
+    winningIdea,
+    hook,
+    bodyText,
+    credibilityReport,
+  }) => {
+    requireFields(
+      {
         profile,
         winningIdea,
-        winnerId,
-        hook || "",
-        body || "",
-        cta || "",
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/credibility-check:",
-        err,
-      );
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during the credibility check.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/analyze-visual-strategy", async (req, res) => {
-    try {
-      const {
-        profile,
-        winningIdea,
-        hook,
-        bodyText,
         credibilityReport,
-      } = req.body;
+      },
+      [
+        "profile",
+        "winningIdea",
+        "credibilityReport",
+      ],
+      "Missing required information for visual strategy analysis.",
+    );
 
-      if (!profile || !winningIdea || !credibilityReport) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for visual strategy analysis.",
-        });
-      }
+    return analyzeVisualStrategy(
+      profile,
+      winningIdea,
+      hook ?? "",
+      bodyText ?? "",
+      credibilityReport,
+    );
+  },
+);
 
-      const result = await analyzeVisualStrategy(
-        profile,
-        winningIdea,
-        hook || "",
-        bodyText || "",
-        credibilityReport,
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/analyze-visual-strategy:",
-        err,
-      );
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during visual strategy analysis.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/improve-visual-prompt", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/improve-visual-prompt",
+  async ({
+    userPrompt,
+    style,
+    aspectRatio,
+    includeRohit,
+    negativeInstructions,
+  }) => {
+    requireFields(
+      {
         userPrompt,
         style,
         aspectRatio,
-        includeRohit,
-        negativeInstructions,
-      } = req.body;
+      },
+      [
+        "userPrompt",
+        "style",
+        "aspectRatio",
+      ],
+      "Missing required information for visual prompt improvement.",
+    );
 
-      if (!userPrompt || !style || !aspectRatio) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for prompt improvement.",
-        });
-      }
+    return improveVisualPrompt(
+      userPrompt,
+      style,
+      aspectRatio,
+      Boolean(includeRohit),
+      negativeInstructions ?? [],
+    );
+  },
+);
 
-      const result = await improveVisualPrompt(
-        userPrompt,
-        style,
-        aspectRatio,
-        Boolean(includeRohit),
-        negativeInstructions || [],
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/improve-visual-prompt:",
-        err,
-      );
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during visual prompt improvement.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/generate-visual", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/generate-visual",
+  async ({
+    prompt,
+    style,
+    aspectRatio,
+    includeRohit,
+    referenceImageBase64,
+  }) => {
+    requireFields(
+      {
         prompt,
         style,
         aspectRatio,
-        includeRohit,
-        referenceImageBase64,
-      } = req.body;
+      },
+      [
+        "prompt",
+        "style",
+        "aspectRatio",
+      ],
+      "Missing required information for image generation.",
+    );
 
-      if (!prompt || !style || !aspectRatio) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for image generation.",
-        });
-      }
+    return generateLinkedInVisual(
+      prompt,
+      style,
+      aspectRatio,
+      Boolean(includeRohit),
+      referenceImageBase64,
+    );
+  },
+);
 
-      const result = await generateLinkedInVisual(
-        prompt,
-        style,
-        aspectRatio,
-        Boolean(includeRohit),
-        referenceImageBase64,
-      );
+/* -------------------------------------------------------------------------- */
+/* Carousel Builder routes                                                    */
+/* -------------------------------------------------------------------------- */
 
-      res.json(result);
-    } catch (err) {
-      console.error("Unhandled error in /api/gemini/generate-visual:", err);
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during image generation.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/generate-carousel", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/generate-carousel",
+  async ({
+    profile,
+    postContent,
+    winningIdea,
+    credibilityReport,
+    requestedSlideCount,
+    postFingerprint,
+  }) => {
+    requireFields(
+      {
         profile,
         postContent,
         winningIdea,
         credibilityReport,
-        requestedSlideCount,
         postFingerprint,
-      } = req.body;
+      },
+      [
+        "profile",
+        "postContent",
+        "winningIdea",
+        "credibilityReport",
+        "postFingerprint",
+      ],
+      "Missing required information for carousel generation.",
+    );
 
-      if (
-        !profile ||
-        !postContent ||
-        !winningIdea ||
-        !credibilityReport ||
-        !postFingerprint
-      ) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for carousel generation.",
-        });
-      }
+    return generateCarouselPlan(
+      profile,
+      postContent,
+      winningIdea,
+      credibilityReport,
+      requestedSlideCount ?? 8,
+      postFingerprint,
+    );
+  },
+);
 
-      const result = await generateCarouselPlan(
-        profile,
-        postContent,
-        winningIdea,
-        credibilityReport,
-        requestedSlideCount || 8,
-        postFingerprint,
-      );
+registerPostRoute(
+  "/api/gemini/carousel-alternative-cover",
+  async ({
+    carouselTitle,
+    carouselObjective,
+  }) => {
+    requireFields(
+      {
+        carouselTitle,
+        carouselObjective,
+      },
+      [
+        "carouselTitle",
+        "carouselObjective",
+      ],
+      "Missing required information for alternative carousel covers.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/generate-carousel:",
-        err,
-      );
+    return generateAlternativeCover(
+      carouselTitle,
+      carouselObjective,
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during carousel generation.",
-      });
-    }
-  });
-
-  app.post(
-    "/api/gemini/carousel-alternative-cover",
-    async (req, res) => {
-      try {
-        const { carouselTitle, carouselObjective } = req.body;
-
-        if (!carouselTitle || !carouselObjective) {
-          return res.status(400).json({
-            success: false,
-            errorCategory: "failed",
-            errorMessage:
-              "Missing required information for alternative carousel covers.",
-          });
-        }
-
-        const result = await generateAlternativeCover(
-          carouselTitle,
-          carouselObjective,
-        );
-
-        res.json(result);
-      } catch (err) {
-        console.error(
-          "Unhandled error in /api/gemini/carousel-alternative-cover:",
-          err,
-        );
-
-        res.status(500).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "An unexpected error occurred while generating alternative covers.",
-        });
-      }
-    },
-  );
-
-  app.post("/api/gemini/rewrite-carousel-slide", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/rewrite-carousel-slide",
+  async ({
+    profile,
+    slide,
+    action,
+    credibilityReport,
+  }) => {
+    requireFields(
+      {
         profile,
         slide,
         action,
+      },
+      [
+        "profile",
+        "slide",
+        "action",
+      ],
+      "Missing required information for rewriting the carousel slide.",
+    );
+
+    return rewriteCarouselSlide(
+      profile,
+      slide,
+      action,
+      credibilityReport,
+    );
+  },
+);
+
+registerPostRoute(
+  "/api/gemini/quality-check-carousel",
+  async ({
+    carouselTitle,
+    slides,
+    credibilityReport,
+  }) => {
+    requireFields(
+      {
+        carouselTitle,
+        slides,
         credibilityReport,
-      } = req.body;
+      },
+      [
+        "carouselTitle",
+        "slides",
+        "credibilityReport",
+      ],
+      "Missing required information for the carousel quality check.",
+    );
 
-      if (!profile || !slide || !action) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for rewriting the slide.",
-        });
-      }
+    return qualityCheckCarousel(
+      carouselTitle,
+      slides,
+      credibilityReport,
+    );
+  },
+);
 
-      const result = await rewriteCarouselSlide(
+registerPostRoute(
+  "/api/gemini/analyze-carousel-visual-needs",
+  async ({
+    profile,
+    carouselTitle,
+    carouselObjective,
+    visualNarrative,
+    designDirection,
+    slides,
+    credibilityReport,
+    researchBriefText,
+  }) => {
+    requireFields(
+      {
         profile,
-        slide,
-        action,
-        credibilityReport,
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/rewrite-carousel-slide:",
-        err,
-      );
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred while rewriting the slide.",
-      });
-    }
-  });
-
-  app.post("/api/gemini/quality-check-carousel", async (req, res) => {
-    try {
-      const {
         carouselTitle,
+        carouselObjective,
         slides,
         credibilityReport,
-      } = req.body;
+      },
+      [
+        "profile",
+        "carouselTitle",
+        "carouselObjective",
+        "slides",
+        "credibilityReport",
+      ],
+      "Missing required information for carousel visual analysis.",
+    );
 
-      if (!carouselTitle || !slides || !credibilityReport) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for the carousel quality check.",
-        });
-      }
+    return analyzeCarouselVisualNeeds(
+      profile,
+      carouselTitle,
+      carouselObjective,
+      visualNarrative ?? "",
+      designDirection ?? "",
+      slides,
+      credibilityReport,
+      researchBriefText,
+    );
+  },
+);
 
-      const result = await qualityCheckCarousel(
-        carouselTitle,
-        slides,
-        credibilityReport,
-      );
+registerPostRoute(
+  "/api/gemini/improve-carousel-asset-prompt",
+  async ({
+    slideTitle,
+    slideBody,
+    visualConcept,
+    artworkType,
+    textSafeArea,
+    includeRohit,
+    brandColors,
+    userPrompt,
+    negativeInstructions,
+  }) => {
+    requireFields(
+      {
+        artworkType,
+        textSafeArea,
+        userPrompt,
+      },
+      [
+        "artworkType",
+        "textSafeArea",
+        "userPrompt",
+      ],
+      "Missing required information for carousel prompt improvement.",
+    );
 
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/quality-check-carousel:",
-        err,
-      );
+    return improveCarouselAssetPrompt(
+      slideTitle ?? "",
+      slideBody ?? "",
+      visualConcept ?? "",
+      artworkType,
+      textSafeArea,
+      Boolean(includeRohit),
+      brandColors ?? {
+        primary: "#000000",
+        accent: "#0000FF",
+        background: "#FFFFFF",
+      },
+      userPrompt,
+      negativeInstructions ?? [],
+    );
+  },
+);
 
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during the carousel quality check.",
-      });
-    }
-  });
-
-    app.post(
-    "/api/gemini/analyze-carousel-visual-needs",
-    async (req, res) => {
-      try {
-        const {
-          profile,
-          carouselTitle,
-          carouselObjective,
-          visualNarrative,
-          designDirection,
-          slides,
-          credibilityReport,
-          researchBriefText,
-        } = req.body;
-
-        if (
-          !profile ||
-          !carouselTitle ||
-          !carouselObjective ||
-          !slides ||
-          !credibilityReport
-        ) {
-          return res.status(400).json({
-            success: false,
-            errorCategory: "failed",
-            errorMessage:
-              "Missing required information for carousel visual analysis.",
-          });
-        }
-
-        const result = await analyzeCarouselVisualNeeds(
-          profile,
-          carouselTitle,
-          carouselObjective,
-          visualNarrative || "",
-          designDirection || "",
-          slides,
-          credibilityReport,
-          researchBriefText,
-        );
-
-        res.json(result);
-      } catch (err) {
-        console.error(
-          "Unhandled error in /api/gemini/analyze-carousel-visual-needs:",
-          err,
-        );
-
-        res.status(500).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "An unexpected error occurred during carousel visual analysis.",
-        });
-      }
-    },
-  );
-
-  app.post(
-    "/api/gemini/improve-carousel-asset-prompt",
-    async (req, res) => {
-      try {
-        const {
-          slideTitle,
-          slideBody,
-          visualConcept,
-          artworkType,
-          textSafeArea,
-          includeRohit,
-          brandColors,
-          userPrompt,
-          negativeInstructions,
-        } = req.body;
-
-        if (!userPrompt || !artworkType || !textSafeArea) {
-          return res.status(400).json({
-            success: false,
-            errorCategory: "failed",
-            errorMessage:
-              "Missing required information for carousel prompt improvement.",
-          });
-        }
-
-        const result = await improveCarouselAssetPrompt(
-          slideTitle || "",
-          slideBody || "",
-          visualConcept || "",
-          artworkType,
-          textSafeArea,
-          Boolean(includeRohit),
-          brandColors || {
-            primary: "#000000",
-            accent: "#0000FF",
-            background: "#FFFFFF",
-          },
-          userPrompt,
-          negativeInstructions || [],
-        );
-
-        res.json(result);
-      } catch (err) {
-        console.error(
-          "Unhandled error in /api/gemini/improve-carousel-asset-prompt:",
-          err,
-        );
-
-        res.status(500).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "An unexpected error occurred during carousel prompt improvement.",
-        });
-      }
-    },
-  );
-
-  app.post("/api/gemini/generate-carousel-asset", async (req, res) => {
-    try {
-      const {
+registerPostRoute(
+  "/api/gemini/generate-carousel-asset",
+  async ({
+    prompt,
+    style,
+    aspectRatio,
+    includeRohit,
+    referenceImageBase64,
+  }) => {
+    requireFields(
+      {
         prompt,
-        style,
         aspectRatio,
-        includeRohit,
-        referenceImageBase64,
-      } = req.body;
+      },
+      [
+        "prompt",
+        "aspectRatio",
+      ],
+      "Missing required information for carousel asset generation.",
+    );
 
-      if (!prompt || !aspectRatio) {
-        return res.status(400).json({
-          success: false,
-          errorCategory: "failed",
-          errorMessage:
-            "Missing required information for carousel asset generation.",
-        });
-      }
+    let cleanAspectRatio:
+      | "1:1"
+      | "4:5"
+      | "16:9" = "1:1";
 
-      let cleanAspectRatio: "1:1" | "4:5" | "16:9" = "1:1";
-
-      if (aspectRatio === "portrait" || aspectRatio === "4:5") {
-        cleanAspectRatio = "4:5";
-      } else if (
-        aspectRatio === "landscape" ||
-        aspectRatio === "16:9"
-      ) {
-        cleanAspectRatio = "16:9";
-      }
-
-      const result = await generateLinkedInVisual(
-        prompt,
-        style || "Modern Bold",
-        cleanAspectRatio,
-        Boolean(includeRohit),
-        referenceImageBase64,
-      );
-
-      res.json(result);
-    } catch (err) {
-      console.error(
-        "Unhandled error in /api/gemini/generate-carousel-asset:",
-        err,
-      );
-
-      res.status(500).json({
-        success: false,
-        errorCategory: "failed",
-        errorMessage:
-          "An unexpected error occurred during carousel asset generation.",
-      });
+    if (
+      aspectRatio === "portrait" ||
+      aspectRatio === "4:5"
+    ) {
+      cleanAspectRatio = "4:5";
+    } else if (
+      aspectRatio === "landscape" ||
+      aspectRatio === "16:9"
+    ) {
+      cleanAspectRatio = "16:9";
     }
-  });
 
-  app.post("/api/sync/upload", async (req, res) => {
-    try {
-      const { token, dataType, data } = req.body;
+    return generateLinkedInVisual(
+      prompt,
+      style ?? "Modern Bold",
+      cleanAspectRatio,
+      Boolean(includeRohit),
+      referenceImageBase64,
+    );
+  },
+);
 
-      if (!token) {
-        return res.status(401).json({
-          success: false,
-          errorMessage: "Missing authentication token.",
-        });
-      }
+/* -------------------------------------------------------------------------- */
+/* Firebase cloud sync helpers                                                */
+/* -------------------------------------------------------------------------- */
 
-      const verified = await verifyFirebaseToken(token);
-      const uid = verified.uid;
+function getFirestoreDatabase() {
+  if (!db) {
+    throw new HttpError(
+      500,
+      "Firestore Admin is not available.",
+    );
+  }
 
-      if (!db) {
-        return res.status(500).json({
-          success: false,
-          errorMessage: "Firestore Admin is not available.",
-        });
-      }
+  return db;
+}
 
-      let docRef;
+function getSyncDocument(
+  uid: string,
+  dataType: string,
+) {
+  const firestore = getFirestoreDatabase();
 
-      if (dataType === "creatorProfile") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("settings")
-          .doc("creatorProfile");
-      } else if (dataType === "researchPreferences") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("settings")
-          .doc("researchPreferences");
-      } else if (dataType === "latestDailyBrief") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("research")
-          .doc("latestDailyBrief");
-      } else {
-        return res.status(400).json({
-          success: false,
-          errorMessage: "Invalid data type.",
-        });
-      }
+  if (dataType === "creatorProfile") {
+    return firestore
+      .collection("users")
+      .doc(uid)
+      .collection("settings")
+      .doc("creatorProfile");
+  }
 
-      await docRef.set({
-        ...data,
-        updatedAt: FieldValue.serverTimestamp(),
-        schemaVersion: "v1",
-      });
+  if (dataType === "researchPreferences") {
+    return firestore
+      .collection("users")
+      .doc(uid)
+      .collection("settings")
+      .doc("researchPreferences");
+  }
 
-      res.json({
-        success: true,
-        message: `${dataType} uploaded successfully.`,
-      });
-    } catch (err: any) {
-      console.error("Upload sync error:", err);
+  if (dataType === "latestDailyBrief") {
+    return firestore
+      .collection("users")
+      .doc(uid)
+      .collection("research")
+      .doc("latestDailyBrief");
+  }
 
-      res.status(500).json({
-        success: false,
-        errorMessage: err.message || "Upload failed.",
-      });
-    }
-  });
+  throw new HttpError(
+    400,
+    "Invalid sync data type.",
+  );
+}
 
-  app.post("/api/sync/download", async (req, res) => {
-    try {
-      const { token, dataType } = req.body;
+function cleanFirestoreDocument(
+  snapshot: any,
+) {
+  if (!snapshot.exists) {
+    return null;
+  }
 
-      if (!token) {
-        return res.status(401).json({
-          success: false,
-          errorMessage: "Missing authentication token.",
-        });
-      }
+  const documentData = {
+    ...snapshot.data(),
+  };
 
-      const verified = await verifyFirebaseToken(token);
-      const uid = verified.uid;
+  if (
+    documentData.updatedAt &&
+    typeof documentData.updatedAt.toDate ===
+      "function"
+  ) {
+    documentData.updatedAt =
+      documentData.updatedAt
+        .toDate()
+        .toISOString();
+  }
 
-      if (!db) {
-        return res.status(500).json({
-          success: false,
-          errorMessage: "Firestore Admin is not available.",
-        });
-      }
+  return documentData;
+}
 
-      let docRef;
+/* -------------------------------------------------------------------------- */
+/* Firebase cloud sync routes                                                 */
+/* -------------------------------------------------------------------------- */
 
-      if (dataType === "creatorProfile") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("settings")
-          .doc("creatorProfile");
-      } else if (dataType === "researchPreferences") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("settings")
-          .doc("researchPreferences");
-      } else if (dataType === "latestDailyBrief") {
-        docRef = db
-          .collection("users")
-          .doc(uid)
-          .collection("research")
-          .doc("latestDailyBrief");
-      } else {
-        return res.status(400).json({
-          success: false,
-          errorMessage: "Invalid data type.",
-        });
-      }
-
-      const snapshot = await docRef.get();
-
-      if (!snapshot.exists) {
-        return res.json({
-          success: true,
-          exists: false,
-        });
-      }
-
-      const data = { ...snapshot.data() } as any;
-
-      if (
-        data.updatedAt &&
-        typeof data.updatedAt.toDate === "function"
-      ) {
-        data.updatedAt = data.updatedAt
-          .toDate()
-          .toISOString();
-      }
-
-      res.json({
-        success: true,
-        exists: true,
+registerPostRoute(
+  "/api/sync/upload",
+  async ({
+    token,
+    dataType,
+    data,
+  }) => {
+    requireFields(
+      {
+        token,
+        dataType,
         data,
-      });
-    } catch (err: any) {
-      console.error("Download sync error:", err);
+      },
+      [
+        "token",
+        "dataType",
+        "data",
+      ],
+      "Missing authentication token or sync data.",
+    );
 
-      res.status(500).json({
-        success: false,
-        errorMessage: err.message || "Download failed.",
-      });
-    }
-  });
+    const verifiedUser =
+      await verifyFirebaseToken(token);
 
-  app.post("/api/sync/status", async (req, res) => {
-    try {
-      const { token } = req.body;
+    const uid = verifiedUser.uid;
 
-      if (!token) {
-        return res.status(401).json({
-          success: false,
-          errorMessage: "Missing authentication token.",
-        });
-      }
+    const documentReference =
+      getSyncDocument(uid, dataType);
 
-      const verified = await verifyFirebaseToken(token);
-      const uid = verified.uid;
+    await documentReference.set({
+      ...data,
+      updatedAt:
+        FieldValue.serverTimestamp(),
+      schemaVersion: "v1",
+    });
 
-      if (!db) {
-        return res.status(500).json({
-          success: false,
-          errorMessage: "Firestore Admin is not available.",
-        });
-      }
-
-      const profileRef = db
+    const syncStateReference =
+      getFirestoreDatabase()
         .collection("users")
         .doc(uid)
-        .collection("settings")
-        .doc("creatorProfile");
+        .collection("metadata")
+        .doc("syncState");
 
-      const preferencesRef = db
+    await syncStateReference.set(
+      {
+        lastSyncedAt:
+          FieldValue.serverTimestamp(),
+        lastSyncedDataType: dataType,
+      },
+      {
+        merge: true,
+      },
+    );
+
+    return {
+      success: true,
+      message: `${dataType} uploaded successfully.`,
+    };
+  },
+);
+
+registerPostRoute(
+  "/api/sync/download",
+  async ({
+    token,
+    dataType,
+  }) => {
+    requireFields(
+      {
+        token,
+        dataType,
+      },
+      [
+        "token",
+        "dataType",
+      ],
+      "Missing authentication token or sync data type.",
+    );
+
+    const verifiedUser =
+      await verifyFirebaseToken(token);
+
+    const snapshot =
+      await getSyncDocument(
+        verifiedUser.uid,
+        dataType,
+      ).get();
+
+    if (!snapshot.exists) {
+      return {
+        success: true,
+        exists: false,
+      };
+    }
+
+    return {
+      success: true,
+      exists: true,
+      data: cleanFirestoreDocument(
+        snapshot,
+      ),
+    };
+  },
+);
+
+registerPostRoute(
+  "/api/sync/status",
+  async ({ token }) => {
+    requireFields(
+      { token },
+      ["token"],
+      "Missing authentication token.",
+    );
+
+    const verifiedUser =
+      await verifyFirebaseToken(token);
+
+    const uid = verifiedUser.uid;
+    const firestore =
+      getFirestoreDatabase();
+
+    const profileReference = firestore
+      .collection("users")
+      .doc(uid)
+      .collection("settings")
+      .doc("creatorProfile");
+
+    const preferencesReference =
+      firestore
         .collection("users")
         .doc(uid)
         .collection("settings")
         .doc("researchPreferences");
 
-      const briefRef = db
-        .collection("users")
-        .doc(uid)
-        .collection("research")
-        .doc("latestDailyBrief");
+    const briefReference = firestore
+      .collection("users")
+      .doc(uid)
+      .collection("research")
+      .doc("latestDailyBrief");
 
-      const [
-        profileSnapshot,
-        preferencesSnapshot,
-        briefSnapshot,
-      ] = await Promise.all([
-        profileRef.get(),
-        preferencesRef.get(),
-        briefRef.get(),
-      ]);
-
-      res.json({
-        success: true,
-        profile: {
-          exists: profileSnapshot.exists,
-          data: profileSnapshot.exists
-            ? profileSnapshot.data()
-            : null,
-        },
-        preferences: {
-          exists: preferencesSnapshot.exists,
-          data: preferencesSnapshot.exists
-            ? preferencesSnapshot.data()
-            : null,
-        },
-        latestDailyBrief: {
-          exists: briefSnapshot.exists,
-          data: briefSnapshot.exists
-            ? briefSnapshot.data()
-            : null,
-        },
-      });
-    } catch (err: any) {
-      console.error("Sync status error:", err);
-
-      res.status(500).json({
-        success: false,
-        errorMessage:
-          err.message || "Checking sync status failed.",
-      });
-    }
-  });
-
-  return app;
-}
-
-const app = createApp();
-
-if (!process.env.VERCEL) {
-  const port = Number(process.env.PORT) || 3000;
-
-  app.listen(port, "0.0.0.0", () => {
-    console.log(`Server running on port ${port}`);
-  });
-}
-
-export default app;
+    const [
+      profileSnapshot,
+      preferencesSnapshot,
+      briefSnapshot,
+    ] = await Promise.all([
+      profileReference.get(),
+      preferencesReference.get(),
+      
