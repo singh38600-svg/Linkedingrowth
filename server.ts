@@ -750,7 +750,7 @@ function createApp() {
     }
   });
 
-  app.post(
+    app.post(
     "/api/gemini/analyze-carousel-visual-needs",
     async (req, res) => {
       try {
@@ -800,4 +800,369 @@ function createApp() {
 
         res.status(500).json({
           success: false,
-          e
+          errorCategory: "failed",
+          errorMessage:
+            "An unexpected error occurred during carousel visual analysis.",
+        });
+      }
+    },
+  );
+
+  app.post(
+    "/api/gemini/improve-carousel-asset-prompt",
+    async (req, res) => {
+      try {
+        const {
+          slideTitle,
+          slideBody,
+          visualConcept,
+          artworkType,
+          textSafeArea,
+          includeRohit,
+          brandColors,
+          userPrompt,
+          negativeInstructions,
+        } = req.body;
+
+        if (!userPrompt || !artworkType || !textSafeArea) {
+          return res.status(400).json({
+            success: false,
+            errorCategory: "failed",
+            errorMessage:
+              "Missing required information for carousel prompt improvement.",
+          });
+        }
+
+        const result = await improveCarouselAssetPrompt(
+          slideTitle || "",
+          slideBody || "",
+          visualConcept || "",
+          artworkType,
+          textSafeArea,
+          Boolean(includeRohit),
+          brandColors || {
+            primary: "#000000",
+            accent: "#0000FF",
+            background: "#FFFFFF",
+          },
+          userPrompt,
+          negativeInstructions || [],
+        );
+
+        res.json(result);
+      } catch (err) {
+        console.error(
+          "Unhandled error in /api/gemini/improve-carousel-asset-prompt:",
+          err,
+        );
+
+        res.status(500).json({
+          success: false,
+          errorCategory: "failed",
+          errorMessage:
+            "An unexpected error occurred during carousel prompt improvement.",
+        });
+      }
+    },
+  );
+
+  app.post("/api/gemini/generate-carousel-asset", async (req, res) => {
+    try {
+      const {
+        prompt,
+        style,
+        aspectRatio,
+        includeRohit,
+        referenceImageBase64,
+      } = req.body;
+
+      if (!prompt || !aspectRatio) {
+        return res.status(400).json({
+          success: false,
+          errorCategory: "failed",
+          errorMessage:
+            "Missing required information for carousel asset generation.",
+        });
+      }
+
+      let cleanAspectRatio: "1:1" | "4:5" | "16:9" = "1:1";
+
+      if (aspectRatio === "portrait" || aspectRatio === "4:5") {
+        cleanAspectRatio = "4:5";
+      } else if (
+        aspectRatio === "landscape" ||
+        aspectRatio === "16:9"
+      ) {
+        cleanAspectRatio = "16:9";
+      }
+
+      const result = await generateLinkedInVisual(
+        prompt,
+        style || "Modern Bold",
+        cleanAspectRatio,
+        Boolean(includeRohit),
+        referenceImageBase64,
+      );
+
+      res.json(result);
+    } catch (err) {
+      console.error(
+        "Unhandled error in /api/gemini/generate-carousel-asset:",
+        err,
+      );
+
+      res.status(500).json({
+        success: false,
+        errorCategory: "failed",
+        errorMessage:
+          "An unexpected error occurred during carousel asset generation.",
+      });
+    }
+  });
+
+  app.post("/api/sync/upload", async (req, res) => {
+    try {
+      const { token, dataType, data } = req.body;
+
+      if (!token) {
+        return res.status(401).json({
+          success: false,
+          errorMessage: "Missing authentication token.",
+        });
+      }
+
+      const verified = await verifyFirebaseToken(token);
+      const uid = verified.uid;
+
+      if (!db) {
+        return res.status(500).json({
+          success: false,
+          errorMessage: "Firestore Admin is not available.",
+        });
+      }
+
+      let docRef;
+
+      if (dataType === "creatorProfile") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("settings")
+          .doc("creatorProfile");
+      } else if (dataType === "researchPreferences") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("settings")
+          .doc("researchPreferences");
+      } else if (dataType === "latestDailyBrief") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("research")
+          .doc("latestDailyBrief");
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: "Invalid data type.",
+        });
+      }
+
+      await docRef.set({
+        ...data,
+        updatedAt: FieldValue.serverTimestamp(),
+        schemaVersion: "v1",
+      });
+
+      res.json({
+        success: true,
+        message: `${dataType} uploaded successfully.`,
+      });
+    } catch (err: any) {
+      console.error("Upload sync error:", err);
+
+      res.status(500).json({
+        success: false,
+        errorMessage: err.message || "Upload failed.",
+      });
+    }
+  });
+
+  app.post("/api/sync/download", async (req, res) => {
+    try {
+      const { token, dataType } = req.body;
+
+      if (!token) {
+        return res.status(401).json({
+          success: false,
+          errorMessage: "Missing authentication token.",
+        });
+      }
+
+      const verified = await verifyFirebaseToken(token);
+      const uid = verified.uid;
+
+      if (!db) {
+        return res.status(500).json({
+          success: false,
+          errorMessage: "Firestore Admin is not available.",
+        });
+      }
+
+      let docRef;
+
+      if (dataType === "creatorProfile") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("settings")
+          .doc("creatorProfile");
+      } else if (dataType === "researchPreferences") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("settings")
+          .doc("researchPreferences");
+      } else if (dataType === "latestDailyBrief") {
+        docRef = db
+          .collection("users")
+          .doc(uid)
+          .collection("research")
+          .doc("latestDailyBrief");
+      } else {
+        return res.status(400).json({
+          success: false,
+          errorMessage: "Invalid data type.",
+        });
+      }
+
+      const snapshot = await docRef.get();
+
+      if (!snapshot.exists) {
+        return res.json({
+          success: true,
+          exists: false,
+        });
+      }
+
+      const data = { ...snapshot.data() } as any;
+
+      if (
+        data.updatedAt &&
+        typeof data.updatedAt.toDate === "function"
+      ) {
+        data.updatedAt = data.updatedAt
+          .toDate()
+          .toISOString();
+      }
+
+      res.json({
+        success: true,
+        exists: true,
+        data,
+      });
+    } catch (err: any) {
+      console.error("Download sync error:", err);
+
+      res.status(500).json({
+        success: false,
+        errorMessage: err.message || "Download failed.",
+      });
+    }
+  });
+
+  app.post("/api/sync/status", async (req, res) => {
+    try {
+      const { token } = req.body;
+
+      if (!token) {
+        return res.status(401).json({
+          success: false,
+          errorMessage: "Missing authentication token.",
+        });
+      }
+
+      const verified = await verifyFirebaseToken(token);
+      const uid = verified.uid;
+
+      if (!db) {
+        return res.status(500).json({
+          success: false,
+          errorMessage: "Firestore Admin is not available.",
+        });
+      }
+
+      const profileRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("creatorProfile");
+
+      const preferencesRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("settings")
+        .doc("researchPreferences");
+
+      const briefRef = db
+        .collection("users")
+        .doc(uid)
+        .collection("research")
+        .doc("latestDailyBrief");
+
+      const [
+        profileSnapshot,
+        preferencesSnapshot,
+        briefSnapshot,
+      ] = await Promise.all([
+        profileRef.get(),
+        preferencesRef.get(),
+        briefRef.get(),
+      ]);
+
+      res.json({
+        success: true,
+        profile: {
+          exists: profileSnapshot.exists,
+          data: profileSnapshot.exists
+            ? profileSnapshot.data()
+            : null,
+        },
+        preferences: {
+          exists: preferencesSnapshot.exists,
+          data: preferencesSnapshot.exists
+            ? preferencesSnapshot.data()
+            : null,
+        },
+        latestDailyBrief: {
+          exists: briefSnapshot.exists,
+          data: briefSnapshot.exists
+            ? briefSnapshot.data()
+            : null,
+        },
+      });
+    } catch (err: any) {
+      console.error("Sync status error:", err);
+
+      res.status(500).json({
+        success: false,
+        errorMessage:
+          err.message || "Checking sync status failed.",
+      });
+    }
+  });
+
+  return app;
+}
+
+const app = createApp();
+
+if (!process.env.VERCEL) {
+  const port = Number(process.env.PORT) || 3000;
+
+  app.listen(port, "0.0.0.0", () => {
+    console.log(`Server running on port ${port}`);
+  });
+}
+
+export default app;
