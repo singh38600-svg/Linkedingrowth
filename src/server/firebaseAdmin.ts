@@ -1,8 +1,7 @@
 import { initializeApp, getApps, getApp, App } from 'firebase-admin/app';
 import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
-import config from '../../firebase-applet-config.json';
-
+import config from '../../firebase-applet-config.json' with { type: 'json' };
 let adminApp: App | null = null;
 let db: Firestore | null = null;
 
