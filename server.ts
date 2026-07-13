@@ -7,7 +7,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import {
   verifyFirebaseToken,
   db,
-} from "./src/server/firebaseAdmin";
+} from "./src/server/firebaseAdmin.js";
 
 import {
   testGeminiConnection,
@@ -32,7 +32,7 @@ import {
   qualityCheckCarousel,
   analyzeCarouselVisualNeeds,
   improveCarouselAssetPrompt,
-} from "./src/server/gemini";
+} from "./src/server/gemini.js";
 
 const app = express();
 
